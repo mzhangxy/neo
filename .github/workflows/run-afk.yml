@@ -1,0 +1,31 @@
+name: NeoHeberg AFK Runner
+
+on:
+  workflow_dispatch:  # 允许手动触发
+  # schedule:
+  #   - cron: '0 */5 * * *' # 每 5 小时自动重启一次（绕过超时限制）
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install requests  # 脚本前置依赖
+
+      - name: Run AFK Script
+        env:
+          # 通过 GitHub Secrets 传入环境变量配置
+          NH_COOKIE_HEADER: ${{ secrets.NH_COOKIE_HEADER }}
+          NH_TG_BOT_TOKEN: ${{ secrets.NH_TG_BOT_TOKEN }}
+          NH_TG_CHAT_ID: ${{ secrets.NH_TG_CHAT_ID }}
+          # 可选参数可以视需求在此处直接定义
+          NH_WAIT: 25 
+        run: python3 neoheberg_afk.py
