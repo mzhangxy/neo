@@ -1,0 +1,69 @@
+name: NeoHeberg AFK Runner
+
+on:
+  workflow_dispatch:  # 允许手动触发
+  # schedule:
+  #   - cron: '0 */5 * * *' # 每 5 小时自动重启一次（绕过超时限制）
+
+# state 文件会被提交回仓库，避免同一时间有两个 run 并发写导致冲突/丢更新
+concurrency:
+  group: neoheberg-afk
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # 需要写权限才能把 neoheberg_state.json 提交回仓库
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install requests  # 脚本前置依赖
+
+      - name: Run AFK Script
+        env:
+          # 通过 GitHub Secrets 传入环境变量配置
+          #NH_COOKIE_HEADER: ${{ secrets.NH_COOKIE_HEADER }}
+          # 只需要 NH_REMEMBER：脚本启动时会自动用它登录，服务端会自动签发新的
+          # __Host-NH（session），无需再手动获取/维护 NH_SESSION。
+          NH_REMEMBER: ${{ secrets.NH_REMEMBER }}
+          NH_TG_BOT_TOKEN: ${{ secrets.NH_TG_BOT_TOKEN }}
+          NH_TG_CHAT_ID: ${{ secrets.NH_TG_CHAT_ID }}
+          # NH_SESSION 现在是可选项，不再需要手动填写；保留仅作为过渡期兜底。
+          # NH_SESSION: ${{ secrets.NH_SESSION }}
+          # 可选参数可以视需求在此处直接定义
+          NH_WAIT: 25
+          NH_MAX_ROUNDS: 300
+        run: python3 neoheberg_afk.py
+
+      # 无论上一步成功/失败/超时，都尝试把最新的 state 文件提交回仓库，
+      # 这样下一次 workflow 运行 checkout 出来的就是上一次运行结束时的最新状态
+      # （rounds / total / start_balance 等才能真正跨运行持久化）。
+      - name: Persist AFK state file
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if [ -z "$(git status --porcelain neoheberg_state.json 2>/dev/null)" ]; then
+            echo "状态文件无变化，跳过提交"
+            exit 0
+          fi
+
+          git add neoheberg_state.json
+          git commit -m "chore: update NeoHeberg AFK state [skip ci]"
+
+          # 防止和其他并发 push 冲突（concurrency 已基本避免，此处再加一层保险）
+          for i in 1 2 3; do
+            git pull --rebase origin "${GITHUB_REF_NAME}" && git push && break
+            echo "推送失败，重试 ($i/3) ..."
+            sleep 5
+          done
