@@ -39,7 +39,7 @@ jobs:
           # NH_SESSION: ${{ secrets.NH_SESSION }}
           # 可选参数可以视需求在此处直接定义
           NH_WAIT: 25
-          NH_MAX_ROUNDS: 300
+          NH_MAX_ROUNDS: 10
         run: python3 neoheberg_afk.py
 
       # 无论上一步成功/失败/超时，都尝试把最新的 state 文件提交回仓库，
