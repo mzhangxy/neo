@@ -165,14 +165,13 @@ def redeem(s: requests.Session, callback: str) -> int:
 
 def make_session() -> requests.Session:
     s = requests.Session()
-    # 1. 仅保留 User-Agent，去掉写死的固定 Cookie 请求头
     s.headers.update({"User-Agent": NH_UA})
     
-    # 2. 将环境变量动态注入到 Session 专属的 cookie jar 中
+    # 显式指定 domain 和 path，否则 requests 不会在请求时携带它们
     if NH_REMEMBER:
-        s.cookies.set("__Host-NH-Remember", NH_REMEMBER)
+        s.cookies.set("__Host-NH-Remember", NH_REMEMBER, domain="dash.neoheberg.fr", path="/")
     if NH_SESSION:
-        s.cookies.set("__Host-NH", NH_SESSION)
+        s.cookies.set("__Host-NH", NH_SESSION, domain="dash.neoheberg.fr", path="/")
         
     return s
 
