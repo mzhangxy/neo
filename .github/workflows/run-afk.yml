@@ -27,5 +27,6 @@ jobs:
           NH_TG_BOT_TOKEN: ${{ secrets.NH_TG_BOT_TOKEN }}
           NH_TG_CHAT_ID: ${{ secrets.NH_TG_CHAT_ID }}
           # 可选参数可以视需求在此处直接定义
-          NH_WAIT: 25 
+          NH_WAIT: 25
+          NH_MAX_ROUNDS: 300
         run: python3 neoheberg_afk.py
