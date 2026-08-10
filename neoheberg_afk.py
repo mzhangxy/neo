@@ -66,7 +66,7 @@ NH_COOKIE_HEADER = os.environ.get("NH_COOKIE_HEADER", "")  # 或直接整条 Coo
 NH_TG_BOT_TOKEN  = os.environ.get("NH_TG_BOT_TOKEN", "")
 NH_TG_CHAT_ID   = os.environ.get("NH_TG_CHAT_ID", "")
 NH_WAIT       = int(os.environ.get("NH_WAIT", "25"))   # 每轮广告等待秒数
-NH_MAX_ROUNDS = int(os.environ.get("NH_MAX_ROUNDS", "0")) # 最大执行轮次，0 为无限制
+NH_MAX_ROUNDS = int(os.environ.get("NH_MAX_ROUNDS", "300")) # 最大执行轮次，0 为无限制
 NH_UA         = os.environ.get("NH_UA", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
 SETTLE_SECONDS = 7   # 回调后等待入账秒数
