@@ -165,8 +165,21 @@ def redeem(s: requests.Session, callback: str) -> int:
 
 def make_session() -> requests.Session:
     s = requests.Session()
-    s.headers.update({"User-Agent": NH_UA, "Cookie": cookie_header()})
+    # 1. 仅保留 User-Agent，去掉写死的固定 Cookie 请求头
+    s.headers.update({"User-Agent": NH_UA})
+    
+    # 2. 将环境变量动态注入到 Session 专属的 cookie jar 中
+    if NH_REMEMBER:
+        s.cookies.set("__Host-NH-Remember", NH_REMEMBER)
+    if NH_SESSION:
+        s.cookies.set("__Host-NH", NH_SESSION)
+        
     return s
+
+#def make_session() -> requests.Session:
+#    s = requests.Session()
+#    s.headers.update({"User-Agent": NH_UA, "Cookie": cookie_header()})
+#    return s
 
 def report(state: dict, balance: float, force: bool = False) -> None:
     now = time.time()
