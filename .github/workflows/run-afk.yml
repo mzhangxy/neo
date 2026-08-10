@@ -23,7 +23,8 @@ jobs:
       - name: Run AFK Script
         env:
           # 通过 GitHub Secrets 传入环境变量配置
-          NH_COOKIE_HEADER: ${{ secrets.NH_COOKIE_HEADER }}
+          #NH_COOKIE_HEADER: ${{ secrets.NH_COOKIE_HEADER }}
+          NH_REMEMBER: ${{ secrets.NH_REMEMBER }}
           NH_TG_BOT_TOKEN: ${{ secrets.NH_TG_BOT_TOKEN }}
           NH_TG_CHAT_ID: ${{ secrets.NH_TG_CHAT_ID }}
           # 可选参数可以视需求在此处直接定义
