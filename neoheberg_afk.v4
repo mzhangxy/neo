@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NeoHeberg AFK 广告挂机脚本（单文件可分享版）- GitHub Actions 适配版
+NeoHeberg AFK 广告挂机脚本- GitHub Actions 适配版
 ================================================
 站点:    https://dash.neoheberg.fr/shop/ads.php  （免费游戏/网页托管面板看广告赚 coins）
 机制:    POST csrf_token → 302 Location 内嵌回调 URL → 直接 GET 回调即发币
