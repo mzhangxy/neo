@@ -165,24 +165,8 @@ def redeem(s: requests.Session, callback: str) -> int:
 
 def make_session() -> requests.Session:
     s = requests.Session()
-    # 仅保留 UA，不要硬编码 Cookie 字符串
-    s.headers.update({"User-Agent": NH_UA})
-    
-    # 使用 update 动态注入字典，完美绕过 domain 校验并实现自动保存新会话
-    cookies_dict = {}
-    if NH_REMEMBER:
-        cookies_dict["__Host-NH-Remember"] = NH_REMEMBER
-    if NH_SESSION:
-        cookies_dict["__Host-NH"] = NH_SESSION
-        
-    s.cookies.update(cookies_dict)
-    
+    s.headers.update({"User-Agent": NH_UA, "Cookie": cookie_header()})
     return s
-
-#def make_session() -> requests.Session:
-#    s = requests.Session()
-#    s.headers.update({"User-Agent": NH_UA, "Cookie": cookie_header()})
-#    return s
 
 def report(state: dict, balance: float, force: bool = False) -> None:
     now = time.time()
