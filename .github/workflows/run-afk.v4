@@ -30,8 +30,6 @@ jobs:
 
       - name: Run AFK Script
         env:
-          # 通过 GitHub Secrets 传入环境变量配置
-          #NH_COOKIE_HEADER: ${{ secrets.NH_COOKIE_HEADER }}
           # 只需要 NH_REMEMBER：脚本启动时会自动用它登录，服务端会自动签发新的
           # __Host-NH（session），无需再手动获取/维护 NH_SESSION。
           NH_REMEMBER: ${{ secrets.NH_REMEMBER }}
