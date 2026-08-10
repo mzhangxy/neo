@@ -165,14 +165,18 @@ def redeem(s: requests.Session, callback: str) -> int:
 
 def make_session() -> requests.Session:
     s = requests.Session()
+    # 仅保留 UA，不要硬编码 Cookie 字符串
     s.headers.update({"User-Agent": NH_UA})
     
-    # 显式指定 domain 和 path，否则 requests 不会在请求时携带它们
+    # 使用 update 动态注入字典，完美绕过 domain 校验并实现自动保存新会话
+    cookies_dict = {}
     if NH_REMEMBER:
-        s.cookies.set("__Host-NH-Remember", NH_REMEMBER, domain="dash.neoheberg.fr", path="/")
+        cookies_dict["__Host-NH-Remember"] = NH_REMEMBER
     if NH_SESSION:
-        s.cookies.set("__Host-NH", NH_SESSION, domain="dash.neoheberg.fr", path="/")
+        cookies_dict["__Host-NH"] = NH_SESSION
         
+    s.cookies.update(cookies_dict)
+    
     return s
 
 #def make_session() -> requests.Session:
