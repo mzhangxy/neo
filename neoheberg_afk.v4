@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+NeoHeberg AFK 广告挂机脚本（单文件可分享版）- GitHub Actions 适配版
+================================================
+站点:    https://dash.neoheberg.fr/shop/ads.php  （免费游戏/网页托管面板看广告赚 coins）
+机制:    POST csrf_token → 302 Location 内嵌回调 URL → 直接 GET 回调即发币
+         （完全绕过 clipurl 拼图游戏 + Cloudflare Turnstile，纯 API 无需浏览器）
+流程(每轮 ~35s, 无冷却):
+  1. GET  /shop/ads.php           → 提取 csrf_token + 当前余额
+  2. POST /shop/ads.php           → 302, Location 含 url=<回调URL>
+  3. sleep 25s（模拟广告观看时长）
+  4. GET  <回调URL>(Referer=clipurl.fr) → 金币到账（入账延迟 2~7s）
+收益:  每广告 0.0005~0.05 coins（实测均值 ~0.03/轮）。跑满约 0.3~0.5 coins/小时。
+
+────────────────────────────────────────────────────────────────────────
+【使用方法】一个文件 + 一个环境变量，即可开跑
+────────────────────────────────────────────────────────────────────────
+前置: 安装依赖  →  pip install requests
+
+1) 设置环境变量（推荐只填一个）:
+   # 方式 A（推荐）—— 只需要 __Host-NH-Remember，脚本启动时会自动用它访问站点，
+   #           服务端会通过 Set-Cookie 自动签发新的 __Host-NH（session），
+   #           requests.Session 自动接管，无需手动获取/填写 NH_SESSION：
+   export NH_REMEMBER="aQvZA...      <-- __Host-NH-Remember 的值"
+
+   # 方式 B —— 如果你已经手上有 session，也可以顺带带上（可选，过期了脚本会自动用 remember 换新的）:
+   export NH_SESSION="A89G...        <-- __Host-NH 的值"
+
+   # 方式 C —— 或直接给完整 Cookie 头字符串（连分号一起）：
+   export NH_COOKIE_HEADER="__Host-NH-Remember=aQvZA...; __Host-NH=A89G...; _ga=..."
+   #           注意：方式 C 下仍会自动登录换新 session，只是初始 cookie 从整条头解析。
+
+2) 可选参数（都要就加 export）:
+   export NH_TG_TOKEN="bot_token..."   # Telegram Bot Token（不要也要，留空则不发通知）
+   export NH_TG_CHAT_ID="你的chat_id"   # 接收通知的 TG 群/私聊 ID
+   export NH_WAIT=25                    # 每轮等待秒数(模拟广告时长, 15~30s)
+   export NH_MAX_ROUNDS=520             # 最大执行轮次 (为 0 则不限制)
+   export NH_UA="Mozilla/5.0 ..."        # 自定义 User-Agent(默认桌面Chrome)
+
+3) 运行:
+   python3 neoheberg_afk.py
+───────────────────────────────────────────────────────────────────
+"""
+
+import json
+import logging
+import os
+import re
+import sys
+import time
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+
+import requests
+
+# ════════════════════════════════════════════════════════════════════
+# 配置（全部来自环境变量，无硬编敏感信息）
+# ════════════════════════════════════════════════════════════════════
+
+BASE = "https://dash.neoheberg.fr"
+ADS_URL = f"{BASE}/shop/ads.php"
+STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "neoheberg_state.json")
+
+# 关键参数 ─ 环境变量
+NH_REMEMBER = os.environ.get("NH_REMEMBER", "")     # __Host-NH-Remember cookie 值
+NH_SESSION  = os.environ.get("NH_SESSION", "")      # __Host-NH cookie 值
+NH_COOKIE_HEADER = os.environ.get("NH_COOKIE_HEADER", "")  # 或直接整条 Cookie 头
+NH_TG_BOT_TOKEN  = os.environ.get("NH_TG_BOT_TOKEN", "")
+NH_TG_CHAT_ID   = os.environ.get("NH_TG_CHAT_ID", "")
+NH_WAIT       = int(os.environ.get("NH_WAIT", "25"))   # 每轮广告等待秒数
+NH_MAX_ROUNDS = int(os.environ.get("NH_MAX_ROUNDS", "300")) # 最大执行轮次，0 为无限制
+NH_UA         = os.environ.get("NH_UA", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+
+SETTLE_SECONDS = 7   # 回调后等待入账秒数
+RETRY_COOLDOWN = 30  # 出错后重试冷却
+
+# ════════════════════════════════════════════════════════════════════
+# 日志
+# ════════════════════════════════════════════════════════════════════
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+                    handlers=[logging.StreamHandler(sys.stdout)])
+log = logging.getLogger("neoheberg-afk")
+
+# ════════════════════════════════════════════════════════════════════
+# Telegram 通知
+# ════════════════════════════════════════════════════════════════════
+def send_tg(text: str) -> None:
+    if not NH_TG_BOT_TOKEN or not NH_TG_CHAT_ID:
+        return
+    try:
+        data = json.dumps({"chat_id": NH_TG_CHAT_ID, "text": text, "parse_mode": "HTML"}).encode()
+        req = urllib.request.Request(f"https://api.telegram.org/bot{NH_TG_BOT_TOKEN}/sendMessage",
+                                      data=data, headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=15)
+    except Exception as e:
+        log.warning("TG 通知失败: %s", e)
+
+# ════════════════════════════════════════════════════════════════════
+# 状态持久化
+# ════════════════════════════════════════════════════════════════════
+def load_state() -> dict:
+    try:
+        with open(STATE_FILE) as f:
+            state = json.load(f)
+    except Exception:
+        state = {}
+    # 补齐缺失字段，兼容旧版状态文件
+    state.setdefault("start_balance", None)
+    state.setdefault("last_balance", None)
+    state.setdefault("total", 0.0)
+    state.setdefault("rounds", 0)
+    state.setdefault("last_report", 0)
+    return state
+
+def save_state(state: dict) -> None:
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
+
+def update_earnings(state: dict, balance: float) -> None:
+    """维护 total（累计收益）与 last_balance（上次已知余额）。
+    只累加正向差值，避免余额被消费/提现导致的下降污染累计统计。"""
+    if state.get("start_balance") is None:
+        state["start_balance"] = balance
+    last = state.get("last_balance")
+    if last is not None:
+        delta = balance - last
+        if delta > 0:
+            state["total"] = round(state.get("total", 0.0) + delta, 6)
+    state["last_balance"] = balance
+
+# ════════════════════════════════════════════════════════════════════
+# 认证：仅用 __Host-NH-Remember 登录，__Host-NH（session）由服务端自动签发
+# ════════════════════════════════════════════════════════════════════
+COOKIE_DOMAIN = "dash.neoheberg.fr"
+
+def _parse_cookie_header(header: str) -> dict:
+    out = {}
+    for part in header.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        out[k.strip()] = v.strip()
+    return out
+
+def init_cookies(s: requests.Session) -> None:
+    """把已有的凭据写入 session 的 CookieJar（而不是拼死的 Cookie 请求头）��
+    这样服务端后续通过 Set-Cookie 签发的新 __Host-NH 才能被 requests 自动接管、自动续期。"""
+    if NH_COOKIE_HEADER:
+        for k, v in _parse_cookie_header(NH_COOKIE_HEADER).items():
+            s.cookies.set(k, v, domain=COOKIE_DOMAIN, path="/", secure=True)
+        return
+    if NH_REMEMBER:
+        s.cookies.set("__Host-NH-Remember", NH_REMEMBER, domain=COOKIE_DOMAIN, path="/", secure=True)
+    if NH_SESSION:
+        # 可选：如果一开始就有旧 session，先塞进去，过期了脚本会自动用 remember 重新换发
+        s.cookies.set("__Host-NH", NH_SESSION, domain=COOKIE_DOMAIN, path="/", secure=True)
+    if not NH_REMEMBER and not NH_SESSION:
+        raise RuntimeError("请设置 NH_COOKIE_HEADER 或 NH_REMEMBER（推荐）/NH_SESSION 环境变量")
+
+def _is_login_page(r: requests.Response) -> bool:
+    return "/login" in r.url or "Connexion" in r.text[:600].replace(" ", "")
+
+def ensure_login(s: requests.Session) -> bool:
+    """仅凭 __Host-NH-Remember 访问一次受保护页面：
+    若 remember 有效，服务端会在响应里通过 Set-Cookie 签发新的 __Host-NH，
+    requests.Session 会自动把它写入 cookiejar，后续请求即可直接复用。"""
+    if "__Host-NH-Remember" not in s.cookies.get_dict():
+        raise RuntimeError("缺少 __Host-NH-Remember，无法自动登录，请设置 NH_REMEMBER")
+
+    r = s.get(ADS_URL, timeout=20)
+    if _is_login_page(r):
+        return False  # remember cookie 已失效
+
+    got_new_session = "__Host-NH" in s.cookies.get_dict()
+    if got_new_session:
+        log.info("✅ 已用 NH_REMEMBER 自动登录，成功获取新的 __Host-NH（session）")
+    else:
+        log.info("ℹ️ 已通过 remember 免登录访问，未观察到新的 __Host-NH（可能站点未刷新该 cookie，但会话仍有效）")
+    return True
+
+# ════════════════════════════════════════════════════════════════════
+# 核心逻辑
+# ════════════════════════════════════════════════════════════════════
+def _get_balance(s: requests.Session) -> float:
+    r = s.get(ADS_URL, timeout=20)
+    if _is_login_page(r):
+        raise PermissionError("session 过期，需要重新导出 cookies")
+    m = re.search(r'font-bold text-lg">([\d.]+) coins', r.text)
+    if not m:
+        raise RuntimeError("页面中未找到余额")
+    return float(m.group(1))
+
+def _get_csrf(s: requests.Session) -> str:
+    r = s.get(ADS_URL, timeout=20)
+    if _is_login_page(r):
+        raise PermissionError("session 过期，需要重新导出 cookies")
+    m = re.search(r'name="csrf_token" value="([a-f0-9]+)"', r.text)
+    if not m:
+        raise RuntimeError("csrf token 未找到")
+    return m.group(1)
+
+def gen_callback(s: requests.Session, csrf: str) -> str | None:
+    r = s.post(ADS_URL, data={"csrf_token": csrf}, allow_redirects=False, timeout=20)
+    loc = r.headers.get("Location")
+    if not loc:
+        return None
+    m = re.search(r"url=([^&]+)", loc)
+    if not m:
+        return None
+    return urllib.parse.unquote(m.group(1))
+
+def redeem(s: requests.Session, callback: str) -> int:
+    r = s.get(callback, headers={"Referer": "https://clipurl.fr/"}, timeout=20)
+    return r.status_code
+
+def make_session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update({"User-Agent": NH_UA})
+    init_cookies(s)
+    return s
+
+def report(state: dict, balance: float, force: bool = False) -> None:
+    now = time.time()
+    if not force and now - state.get("last_report", 0) < 3600:
+        return
+    state["last_report"] = now
+    save_state(state)
+    total = state.get("total", 0.0)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    msg = (
+        f"🪄 NeoHeberg AFK 已连接\n📅 {ts}\n\n"
+        f"💰 <b>余额</b>: {balance:.4f} 🪙\n"
+        f"📈 <b>累计收益</b>: +{total:.4f} 🪙（{state['rounds']} 轮）"
+    )
+    send_tg(msg)
+    log.info("TG 报告: 余额=%s 累计收益=%s", balance, total)
+
+def main() -> None:
+    # 初始化 session & 启动检查
+    try:
+        s = make_session()
+    except RuntimeError as e:
+        log.error("初始化失败: %s", e)
+        sys.exit(1)
+
+    # 仅凭 __Host-NH-Remember 自动登录，服务端自动签发新的 __Host-NH（session）
+    try:
+        if not ensure_login(s):
+            raise PermissionError("NH_REMEMBER 已失效，无法自动登录")
+    except (PermissionError, RuntimeError) as e:
+        log.error("自动登录失败: %s", e)
+        send_tg(f"❌ NeoHeberg AFK 自动登录失败: {e}，请重新导出 NH_REMEMBER")
+        sys.exit(1)
+
+    state = load_state()
+    try:
+        bal = _get_balance(s)
+        update_earnings(state, bal)
+        log.info("启动，当前余额: %s，历史累计收益: %s", bal, state["total"])
+        report(state, bal, force=True)
+    except PermissionError as e:
+        log.error("启动失败: %s", e)
+        send_tg(f"❌ NeoHeberg AFK 启动失败: {e}")
+        sys.exit(1)
+
+    consecutive_fail = 0
+    while True:
+        # 退出条件检查：判断是否达到设定的最大轮次
+        if NH_MAX_ROUNDS > 0 and state.get("rounds", 0) >= NH_MAX_ROUNDS:
+            log.info("🎯 已达到设定的最大轮次 %d，脚本平滑退出", NH_MAX_ROUNDS)
+            send_tg(f"✅ NeoHeberg 任务完成，已跑满 {NH_MAX_ROUNDS} 轮，平滑退出。")
+            break
+
+        try:
+            csrf = _get_csrf(s)
+            cb = gen_callback(s, csrf)
+            if not cb:
+                consecutive_fail += 1
+                if consecutive_fail >= 5:
+                    raise RuntimeError("连续 5 次生成回调失败")
+                time.sleep(20)
+                continue
+            time.sleep(NH_WAIT)
+            st = redeem(s, cb)
+            if st != 200:
+                log.warning("回调状态异常: %s", st)
+            time.sleep(SETTLE_SECONDS)
+            state["rounds"] += 1
+            consecutive_fail = 0
+            log.info("第 %d 轮完成 (回调 %s)", state["rounds"], st)
+        except PermissionError as e:
+            log.error("session 过期: %s，尝试用 NH_REMEMBER 自动重新登录", e)
+            try:
+                if ensure_login(s):
+                    log.info("✅ 自动重新登录成功，继续运行")
+                    continue
+                log.error("NH_REMEMBER 也已失效，需要人工重新导出")
+                send_tg("⚠️ NeoHeberg NH_REMEMBER 已失效，请重新导出 cookies 并更新环境变量后重启")
+                time.sleep(3600)
+            except RuntimeError as e2:
+                log.error("自动重新登录失败: %s", e2)
+                send_tg(f"⚠️ NeoHeberg 自动重新登录失败: {e2}")
+                time.sleep(3600)
+        except Exception as e:
+            log.exception("异常: %s", e)
+            consecutive_fail += 1
+            time.sleep(RETRY_COOLDOWN)
+
+        # 定期报告 + 状态（每次都刷新 total，无论是否到报告间隔）
+        try:
+            bal = _get_balance(s)
+            update_earnings(state, bal)
+            report(state, bal)
+            save_state(state)
+        except Exception:
+            pass
+
+if __name__ == "__main__":
+    main()
